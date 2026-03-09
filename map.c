@@ -215,6 +215,26 @@ static void chain_post(const mm_mapopt_t *opt, int max_chain_gap_ref, const mm_i
 static mm_reg1_t *align_regs(const mm_mapopt_t *opt, const mm_idx_t *mi, void *km, int qlen, const char *seq, int *n_regs, mm_reg1_t *regs, mm128_t *a)
 {
 	if (!(opt->flag & MM_F_CIGAR)) return regs;
+
+	// Chain-coverage pre-filter: skip DP if no chain's span (qe-qs) / qlen meets threshold.
+	// This is chain-phase coverage, NOT post-DP aligned-base coverage. Chain span can
+	// overestimate true coverage because it includes gaps between seeds. Safe threshold
+	// range is <= 0.70 for zero false negatives on HiFi data.
+	// For paired-end reads, this is called per-segment with segment-specific qlen,
+	// which is correct — each segment is independently filtered.
+	if (opt->min_chain_coverage > 0.0f && qlen > 0) {
+		float best_cov = 0.0f;
+		int i;
+		for (i = 0; i < *n_regs; i++) {
+			float cov = (float)(regs[i].qe - regs[i].qs) / (float)qlen;
+			if (cov > best_cov) best_cov = cov;
+		}
+		if (best_cov < opt->min_chain_coverage) {
+			*n_regs = 0;
+			return regs;
+		}
+	}
+
 	regs = mm_align_skeleton(km, opt, mi, qlen, seq, n_regs, regs, a); // this calls mm_filter_regs()
 	if (!(opt->flag & MM_F_ALL_CHAINS)) { // don't choose primary mapping(s)
 		mm_set_parent(km, opt->mask_level, opt->mask_len, *n_regs, regs, opt->a * 2 + opt->b, opt->flag&MM_F_HARD_MLEVEL, opt->alt_drop);
@@ -337,6 +357,9 @@ void mm_map_frag_core(const mm_idx_t *mi, int n_segs, const int *qlens, const ch
 
 	if (n_segs == 1) { // uni-segment
 		regs0 = align_regs(opt, mi, b->km, qlens[0], seqs[0], &n_regs0, regs0, a);
+		// NB: when min_chain_coverage filter fires, n_regs0 == 0 and realloc(ptr, 0) frees
+		// the buffer (returns NULL on glibc). This is safe because all downstream code
+		// (mm_set_mapq2, mm_jump_split, etc.) gates on n_regs0 > 0 before dereferencing.
 		regs0 = (mm_reg1_t*)realloc(regs0, sizeof(*regs0) * n_regs0);
 		mm_set_mapq2(b->km, n_regs0, regs0, opt->min_chain_score, opt->a, rep_len, is_sr || is_sr_rna, is_splice);
 		n_regs[0] = n_regs0, regs[0] = regs0;

@@ -189,6 +189,8 @@ typedef struct {
 	int64_t cap_kalloc;
 
 	const char *split_prefix;
+
+	float min_chain_coverage; // skip DP if best chain span / qlen < this (0.0 = disabled)
 } mm_mapopt_t;
 
 // index reader
